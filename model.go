@@ -29,6 +29,7 @@ type TrackCapability struct {
 type TrackProposal struct {
 	ID          string   `json:"id"`
 	Kind        string   `json:"kind"`
+	Owner       string   `json:"owner,omitempty"`
 	Enabled     bool     `json:"enabled"`
 	Direction   string   `json:"direction,omitempty"`
 	Codecs      []string `json:"codecs,omitempty"`
@@ -37,6 +38,7 @@ type TrackProposal struct {
 	SampleRates []int    `json:"sample_rates,omitempty"`
 	Channels    []int    `json:"channels,omitempty"`
 	Resolutions []Size   `json:"resolutions,omitempty"`
+	Subscribers []string `json:"subscribers,omitempty"`
 }
 
 type Peer struct {
@@ -45,15 +47,17 @@ type Peer struct {
 }
 
 type TrackState struct {
-	ID         string `json:"id"`
-	Kind       string `json:"kind"`
-	Direction  string `json:"direction"`
-	Codec      string `json:"codec"`
-	BitrateBps int    `json:"bitrate_bps"`
-	SampleRate int    `json:"sample_rate,omitempty"`
-	Channels   int    `json:"channels,omitempty"`
-	Resolution Size   `json:"resolution,omitempty"`
-	Revision   int    `json:"revision"`
+	ID          string   `json:"id"`
+	Kind        string   `json:"kind"`
+	Owner       string   `json:"owner"`
+	Direction   string   `json:"direction"`
+	Codec       string   `json:"codec"`
+	BitrateBps  int      `json:"bitrate_bps"`
+	SampleRate  int      `json:"sample_rate,omitempty"`
+	Channels    int      `json:"channels,omitempty"`
+	Resolution  Size     `json:"resolution,omitempty"`
+	Subscribers []string `json:"subscribers,omitempty"`
+	Revision    int      `json:"revision"`
 }
 
 type Session struct {
@@ -68,16 +72,34 @@ type VersionStatus string
 const (
 	VersionProposing  VersionStatus = "proposing"
 	VersionAccepted   VersionStatus = "accepted"
+	VersionPartial    VersionStatus = "partially_accepted"
 	VersionRejected   VersionStatus = "rejected"
 	VersionSuperseded VersionStatus = "superseded"
 )
 
+type VersionKind string
+
+const (
+	VersionKindOffer      VersionKind = "offer"
+	VersionKindMembership VersionKind = "membership"
+)
+
+type PeerResponse struct {
+	Status VersionStatus   `json:"status"`
+	Reason string          `json:"reason,omitempty"`
+	Answer []TrackProposal `json:"answer,omitempty"`
+}
+
 type NegotiationVersion struct {
 	SessionID string          `json:"session_id"`
 	Revision  int             `json:"revision"`
+	Kind      VersionKind     `json:"kind"`
+	BasedOn   int             `json:"based_on"`
 	Initiator string          `json:"initiator"`
 	Status    VersionStatus   `json:"status"`
 	Reason    string          `json:"reason,omitempty"`
+	Participants []string        `json:"participants"`
+	Responses map[string]PeerResponse `json:"responses,omitempty"`
 	Proposal  []TrackProposal `json:"proposal,omitempty"`
 	Answer    []TrackProposal `json:"answer,omitempty"`
 }

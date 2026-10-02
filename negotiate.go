@@ -127,6 +127,75 @@ func commonSizes(groups ...[]Size) []Size {
 	return out
 }
 
+func negotiateTrack(track TrackProposal, owner Peer, answers map[string]TrackProposal, answerers map[string]Peer, revision int) (TrackState, error) {
+	offerer := owner
+	proposal := track
+	id := track.ID
+	groups := [][]string{
+		offerer.Capabilities[id].Directions,
+		[]string{proposal.Direction},
+	}
+	codecGroups := [][]string{
+		offerer.Capabilities[id].Codecs,
+		proposal.Codecs,
+	}
+	minBitrate := maxInt(proposal.BitrateMin, offerer.Capabilities[id].BitrateMin)
+	maxBitrate := minInt(proposal.BitrateMax, offerer.Capabilities[id].BitrateMax)
+	sampleGroups := [][]int{offerer.Capabilities[id].SampleRates, proposal.SampleRates}
+	channelGroups := [][]int{offerer.Capabilities[id].Channels, proposal.Channels}
+	sizeGroups := [][]Size{offerer.Capabilities[id].Resolutions, proposal.Resolutions}
+	for responder, answered := range answers {
+		answerer := answerers[responder]
+		groups = append(groups, answerer.Capabilities[id].Directions, []string{answered.Direction})
+		codecGroups = append(codecGroups, answerer.Capabilities[id].Codecs, answered.Codecs)
+		minBitrate = maxInt(minBitrate, answered.BitrateMin, answerer.Capabilities[id].BitrateMin)
+		maxBitrate = minInt(maxBitrate, answered.BitrateMax, answerer.Capabilities[id].BitrateMax)
+		sampleGroups = append(sampleGroups, answerer.Capabilities[id].SampleRates, answered.SampleRates)
+		channelGroups = append(channelGroups, answerer.Capabilities[id].Channels, answered.Channels)
+		sizeGroups = append(sizeGroups, answerer.Capabilities[id].Resolutions, answered.Resolutions)
+	}
+	directions := commonStrings(groups...)
+	if len(directions) == 0 {
+		return TrackState{}, fmt.Errorf("track %s has no common direction", id)
+	}
+	codecs := commonStrings(codecGroups...)
+	if len(codecs) == 0 {
+		return TrackState{}, fmt.Errorf("track %s has no common codec", id)
+	}
+	if minBitrate <= 0 || minBitrate > maxBitrate {
+		return TrackState{}, fmt.Errorf("track %s has no common bitrate", id)
+	}
+	state := TrackState{
+		ID:         id,
+		Kind:       proposal.Kind,
+		Owner:      proposal.Owner,
+		Direction:  directions[len(directions)-1],
+		Codec:      codecs[len(codecs)-1],
+		BitrateBps: maxBitrate,
+		Revision:   revision,
+	}
+	if proposal.Kind == "audio" {
+		sampleRates := commonInts(sampleGroups...)
+		if len(sampleRates) == 0 {
+		return TrackState{}, fmt.Errorf("track %s has no common sample rate", id)
+		}
+		channelsList := commonInts(channelGroups...)
+		if len(channelsList) == 0 {
+		return TrackState{}, fmt.Errorf("track %s has no common channel count", id)
+		}
+		state.SampleRate = sampleRates[len(sampleRates)-1]
+		state.Channels = channelsList[len(channelsList)-1]
+	}
+	if proposal.Kind == "video" {
+		resolutions := commonSizes(sizeGroups...)
+		if len(resolutions) == 0 {
+		return TrackState{}, fmt.Errorf("track %s has no common resolution", id)
+		}
+		state.Resolution = resolutions[len(resolutions)-1]
+	}
+	return state, nil
+}
+
 func negotiateTracks(peers map[string]Peer, initiator, responder string, offer, answer []TrackProposal) ([]TrackState, error) {
 	offerer, ok := peers[initiator]
 	if !ok {
@@ -136,7 +205,6 @@ func negotiateTracks(peers map[string]Peer, initiator, responder string, offer, 
 	if !ok {
 		return nil, fmt.Errorf("unknown peer %s", responder)
 	}
-	var _ = capabilityIndex
 	offers := proposalIndex(offer)
 	answers := proposalIndex(answer)
 	if len(offers) != len(offer) || len(answers) != len(answer) {
@@ -173,50 +241,18 @@ func negotiateTracks(peers map[string]Peer, initiator, responder string, offer, 
 		if offeredCap.Kind != offered.Kind || answeredCap.Kind != offered.Kind {
 			return nil, fmt.Errorf("track %s kind is outside capability metadata", id)
 		}
+		offered.Owner = initiator
+		if len(offered.Subscribers) == 0 {
+			offered.Subscribers = []string{responder}
+		}
 		if !offered.Enabled || !answered.Enabled {
 			continue
 		}
-
-		directions := commonStrings(offeredCap.Directions, answeredCap.Directions, []string{offered.Direction}, []string{answered.Direction})
-		if len(directions) == 0 {
-			return nil, fmt.Errorf("track %s has no common direction", id)
+		state, err := negotiateTrack(offered, offerer, map[string]TrackProposal{responder: answered}, map[string]Peer{responder: answerer}, 0)
+		if err != nil {
+			return nil, err
 		}
-		codecs := commonStrings(offeredCap.Codecs, answeredCap.Codecs, offered.Codecs, answered.Codecs)
-		if len(codecs) == 0 {
-			return nil, fmt.Errorf("track %s has no common codec", id)
-		}
-		minBitrate := maxInt(offered.BitrateMin, answered.BitrateMin, offeredCap.BitrateMin, answeredCap.BitrateMin)
-		maxBitrate := minInt(offered.BitrateMax, answered.BitrateMax, offeredCap.BitrateMax, answeredCap.BitrateMax)
-		if minBitrate <= 0 || minBitrate > maxBitrate {
-			return nil, fmt.Errorf("track %s has no common bitrate", id)
-		}
-
-		state := TrackState{
-			ID:         id,
-			Kind:       offered.Kind,
-			Direction:  directions[len(directions)-1],
-			Codec:      codecs[len(codecs)-1],
-			BitrateBps: maxBitrate,
-		}
-		if offered.Kind == "audio" {
-			sampleRates := commonInts(offeredCap.SampleRates, answeredCap.SampleRates, offered.SampleRates, answered.SampleRates)
-			if len(sampleRates) == 0 {
-				return nil, fmt.Errorf("track %s has no common sample rate", id)
-			}
-			channelsList := commonInts(offeredCap.Channels, answeredCap.Channels, offered.Channels, answered.Channels)
-			if len(channelsList) == 0 {
-				return nil, fmt.Errorf("track %s has no common channel count", id)
-			}
-			state.SampleRate = sampleRates[len(sampleRates)-1]
-			state.Channels = channelsList[len(channelsList)-1]
-		}
-		if offered.Kind == "video" {
-			resolutions := commonSizes(offeredCap.Resolutions, answeredCap.Resolutions, offered.Resolutions, answered.Resolutions)
-			if len(resolutions) == 0 {
-				return nil, fmt.Errorf("track %s has no common resolution", id)
-			}
-			state.Resolution = resolutions[len(resolutions)-1]
-		}
+		state.Subscribers = append([]string(nil), offered.Subscribers...)
 		result = append(result, state)
 	}
 	return result, nil
