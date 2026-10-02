@@ -127,7 +127,7 @@ func commonSizes(groups ...[]Size) []Size {
 	return out
 }
 
-func negotiateTracks(peers map[string]Peer, initiator, responder string, offer, answer []TrackProposal) ([]TrackState, error) {
+func negotiateTracks(peers map[string]Peer, initiator, responder string, offer, answer []TrackProposal, existing []TrackState, members []string) ([]TrackState, error) {
 	offerer, ok := peers[initiator]
 	if !ok {
 		return nil, fmt.Errorf("unknown peer %s", initiator)
@@ -145,6 +145,12 @@ func negotiateTracks(peers map[string]Peer, initiator, responder string, offer, 
 	if len(offers) != len(answers) {
 		return nil, fmt.Errorf("offer and answer must describe the same track set")
 	}
+
+	existingByID := map[string]TrackState{}
+	for _, track := range existing {
+		existingByID[track.ID] = track
+	}
+	memberSet := sliceSet(members)
 
 	ids := make([]string, 0, len(offers))
 	for id := range offers {
@@ -217,9 +223,39 @@ func negotiateTracks(peers map[string]Peer, initiator, responder string, offer, 
 			}
 			state.Resolution = resolutions[len(resolutions)-1]
 		}
+		if previous, ok := existingByID[id]; ok {
+			state.Publisher = previous.Publisher
+			state.Subscribers = filterMembers(previous.Subscribers, memberSet)
+		} else {
+			state.Publisher = initiator
+		}
+		state.Subscribers = addUniqueMembers(state.Subscribers, memberSet, initiator, responder)
 		result = append(result, state)
 	}
 	return result, nil
+}
+
+func filterMembers(items []string, members map[string]bool) []string {
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		if members[item] {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
+func addUniqueMembers(items []string, members map[string]bool, ids ...string) []string {
+	seen := sliceSet(items)
+	out := append([]string(nil), items...)
+	for _, id := range ids {
+		if members[id] && !seen[id] {
+			seen[id] = true
+			out = append(out, id)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 func maxInt(values ...int) int {

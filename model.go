@@ -45,15 +45,17 @@ type Peer struct {
 }
 
 type TrackState struct {
-	ID         string `json:"id"`
-	Kind       string `json:"kind"`
-	Direction  string `json:"direction"`
-	Codec      string `json:"codec"`
-	BitrateBps int    `json:"bitrate_bps"`
-	SampleRate int    `json:"sample_rate,omitempty"`
-	Channels   int    `json:"channels,omitempty"`
-	Resolution Size   `json:"resolution,omitempty"`
-	Revision   int    `json:"revision"`
+	ID          string   `json:"id"`
+	Kind        string   `json:"kind"`
+	Direction   string   `json:"direction"`
+	Codec       string   `json:"codec"`
+	BitrateBps  int      `json:"bitrate_bps"`
+	SampleRate  int      `json:"sample_rate,omitempty"`
+	Channels    int      `json:"channels,omitempty"`
+	Resolution  Size     `json:"resolution,omitempty"`
+	Revision    int      `json:"revision"`
+	Publisher   string   `json:"publisher,omitempty"`
+	Subscribers []string `json:"subscribers,omitempty"`
 }
 
 type Session struct {
@@ -61,25 +63,30 @@ type Session struct {
 	Peers    []string     `json:"peers"`
 	Tracks   []TrackState `json:"tracks"`
 	Revision int          `json:"revision"`
+	Scope    []string     `json:"scope,omitempty"`
 }
 
 type VersionStatus string
 
 const (
 	VersionProposing  VersionStatus = "proposing"
+	VersionPartial    VersionStatus = "partial"
 	VersionAccepted   VersionStatus = "accepted"
 	VersionRejected   VersionStatus = "rejected"
 	VersionSuperseded VersionStatus = "superseded"
 )
 
 type NegotiationVersion struct {
-	SessionID string          `json:"session_id"`
-	Revision  int             `json:"revision"`
-	Initiator string          `json:"initiator"`
-	Status    VersionStatus   `json:"status"`
-	Reason    string          `json:"reason,omitempty"`
-	Proposal  []TrackProposal `json:"proposal,omitempty"`
-	Answer    []TrackProposal `json:"answer,omitempty"`
+	SessionID  string          `json:"session_id"`
+	Revision   int             `json:"revision"`
+	Initiator  string          `json:"initiator"`
+	Status     VersionStatus   `json:"status"`
+	Reason     string          `json:"reason,omitempty"`
+	Proposal   []TrackProposal `json:"proposal,omitempty"`
+	Answer     []TrackProposal `json:"answer,omitempty"`
+	Pending    []string        `json:"pending,omitempty"`
+	AcceptedBy []string        `json:"accepted_by,omitempty"`
+	Declined   []string        `json:"declined,omitempty"`
 }
 
 type MessageType string

@@ -42,7 +42,17 @@ func describeTracks(tracks []TrackState) string {
 	}
 	parts := make([]string, 0, len(tracks))
 	for _, track := range tracks {
-		parts = append(parts, fmt.Sprintf("%s(%s,%s,%dbps,r%d)", track.ID, track.Kind, track.Codec, track.BitrateBps, track.Revision))
+		parts = append(parts, fmt.Sprintf("%s(%s,%s,%dbps,r%d,pub=%s,sub=%v)", track.ID, track.Kind, track.Codec, track.BitrateBps, track.Revision, track.Publisher, track.Subscribers))
 	}
 	return strings.Join(parts, ", ")
+}
+
+func (m *LocalMediaSource) ProduceFor(peerID string, tracks []TrackState) []MediaFrame {
+	visible := make([]TrackState, 0, len(tracks))
+	for _, track := range tracks {
+		if track.Publisher == peerID || containsString(track.Subscribers, peerID) {
+			visible = append(visible, track)
+		}
+	}
+	return m.Produce(visible)
 }

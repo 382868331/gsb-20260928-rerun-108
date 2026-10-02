@@ -170,3 +170,165 @@ func testAudioOnlyProposal() []TrackProposal {
 	proposal[1].Enabled = false
 	return proposal
 }
+
+func newMultiTestService(t *testing.T) (*Service, string) {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), "data")
+	service, err := NewService(NewStore(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.RegisterPeer(Peer{ID: "alice", Capabilities: testCapabilities()})
+	service.RegisterPeer(Peer{ID: "bob", Capabilities: testCapabilities()})
+	carolCaps := testCapabilities()
+	video := carolCaps["video-1"]
+	video.Codecs = []string{"AV1"}
+	carolCaps["video-1"] = video
+	service.RegisterPeer(Peer{ID: "carol", Capabilities: carolCaps})
+	if _, err := service.CreateSession("call", "bob", "alice"); err != nil {
+		t.Fatal(err)
+	}
+	return service, dir
+
+}
+
+func TestPartialAcceptanceScopeIsExplicit(t *testing.T) {
+	service, _ := newMultiTestService(t)
+	if _, err := service.JoinSession("call", "carol"); err != nil {
+		t.Fatal(err)
+	}
+	offer, err := service.CreateOffer("call", "alice", testFullProposal())
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, version, err := service.AnswerOffer("call", "bob", offer.Revision, testFullProposal())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if version.Status != VersionPartial {
+		t.Fatalf("expected partial while carol pending, got %s", version.Status)
+	}
+	if len(session.Scope) != 2 || session.Scope[0] != "alice" || session.Scope[1] != "bob" {
+		t.Fatalf("scope must list only confirmed peers, got %v", session.Scope)
+	}
+	decline := testFullProposal()
+	decline[1].Codecs = []string{"AV1"}
+	session, version, err = service.AnswerOffer("call", "carol", offer.Revision, decline)
+	if err == nil {
+		t.Fatal("expected carol answer to fail on codec")
+	}
+	if version.Status != VersionPartial || len(version.Declined) != 1 || version.Declined[0] != "carol" {
+		t.Fatalf("declined member must stay visible, got status=%s declined=%v", version.Status, version.Declined)
+	}
+	if len(session.Scope) != 2 {
+		t.Fatalf("declined member must not enter scope, got %v", session.Scope)
+	}
+}
+
+func TestJoinLeaveReleasesPublishedTracks(t *testing.T) {
+	service, _ := newMultiTestService(t)
+	if _, err := service.JoinSession("call", "carol"); err != nil {
+		t.Fatal(err)
+	}
+	offer, _ := service.CreateOffer("call", "carol", testAudioOnlyProposal())
+	if _, _, err := service.AnswerOffer("call", "alice", offer.Revision, testAudioOnlyProposal()); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := service.AnswerOffer("call", "bob", offer.Revision, testAudioOnlyProposal()); err != nil {
+		t.Fatal(err)
+	}
+	session, _ := service.Session("call")
+	if len(session.Tracks) != 1 || session.Tracks[0].Publisher != "carol" {
+		t.Fatalf("expected carol-owned audio track, got %+v", session.Tracks)
+	}
+	if _, err := service.LeaveSession("call", "carol"); err != nil {
+		t.Fatal(err)
+	}
+	session, _ = service.Session("call")
+	if len(session.Tracks) != 0 {
+		t.Fatalf("leaver tracks must be released, got %+v", session.Tracks)
+	}
+	if len(session.Peers) != 2 {
+		t.Fatalf("leaver must be removed from members, got %v", session.Peers)
+	}
+}
+
+func TestReconnectCatchUpDoesNotOverwrite(t *testing.T) {
+	service, _ := newMultiTestService(t)
+	if _, err := service.JoinSession("call", "carol"); err != nil {
+		t.Fatal(err)
+	}
+	bus := NewBus()
+	alice := NewEndpoint("call", "alice", service, bus)
+	alice.Connect()
+	bobEndpoint := NewEndpoint("call", "bob", service, bus)
+	bobEndpoint.Connect()
+	carolEndpoint := NewEndpoint("call", "carol", service, bus)
+	carolEndpoint.Connect()
+
+	carolEndpoint.Disconnect()
+	first, err := alice.OfferAll(testAudioOnlyProposal())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bus.Queued("carol") != 1 {
+		t.Fatalf("expected queued offer for offline carol, got %d", bus.Queued("carol"))
+	}
+	carolEndpoint.Connect()
+	session, view, err := service.SyncView("call", "carol")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if session.Revision != first.Revision || len(view) != 1 {
+		t.Fatalf("carol must catch up to r%d, got r%d view=%+v", first.Revision, session.Revision, view)
+	}
+	if _, _, err := service.AnswerOffer("call", "carol", first.Revision, testAudioOnlyProposal()); !errors.Is(err, ErrStale) {
+		t.Fatalf("duplicate answer after catch-up must be stale, got %v", err)
+	}
+	current, _ := service.Session("call")
+	if current.Revision != first.Revision {
+		t.Fatalf("stale answer overwrote revision: got %d want %d", current.Revision, first.Revision)
+	}
+}
+
+func TestSubscriptionAdjustSurvivesRestore(t *testing.T) {
+	service, dir := newMultiTestService(t)
+	if _, err := service.JoinSession("call", "carol"); err != nil {
+		t.Fatal(err)
+	}
+	offer, _ := service.CreateOffer("call", "alice", testAudioOnlyProposal())
+	service.AnswerOffer("call", "bob", offer.Revision, testAudioOnlyProposal())
+	service.AnswerOffer("call", "carol", offer.Revision, testAudioOnlyProposal())
+	if _, _, err := service.AdjustSubscription("call", "carol", "audio-1", false); err != nil {
+		t.Fatal(err)
+	}
+
+	restored, err := NewService(NewStore(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, view, err := restored.SyncView("call", "carol")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(view) != 0 {
+		t.Fatalf("unsubscribe must persist across restore, got %+v", view)
+	}
+	session, _ := restored.Session("call")
+	if session.Tracks[0].Publisher != "alice" {
+		t.Fatalf("ownership must survive restore, got %+v", session.Tracks[0])
+	}
+	history, err := restored.Versions("call")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var subEntry *NegotiationVersion
+	for i := range history {
+		if history[i].Initiator == "carol" && history[i].Status == VersionAccepted {
+			subEntry = &history[i]
+		}
+	}
+	if subEntry == nil {
+		t.Fatal("subscription change must appear in restored history")
+	}
+}
