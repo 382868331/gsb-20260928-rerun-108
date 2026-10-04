@@ -11,7 +11,14 @@ const DefaultSessionID = "call-1"
 
 func main() {
 	dataDir := flag.String("data", filepath.Join(".", "runtime-data"), "directory for independent session, track and negotiation JSON files")
+	roomDemo := flag.Bool("room", false, "run the multi-party participation/track demo instead of the original two-party demo")
 	flag.Parse()
+	if *roomDemo {
+		if err := runRoomDemo(filepath.Join(*dataDir, "room-demo")); err != nil {
+			panic(err)
+		}
+		return
+	}
 
 	store := NewStore(*dataDir)
 	service, err := NewService(store)

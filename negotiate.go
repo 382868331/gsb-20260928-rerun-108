@@ -177,11 +177,11 @@ func negotiateTrack(track TrackProposal, owner Peer, answers map[string]TrackPro
 	if proposal.Kind == "audio" {
 		sampleRates := commonInts(sampleGroups...)
 		if len(sampleRates) == 0 {
-		return TrackState{}, fmt.Errorf("track %s has no common sample rate", id)
+			return TrackState{}, fmt.Errorf("track %s has no common sample rate", id)
 		}
 		channelsList := commonInts(channelGroups...)
 		if len(channelsList) == 0 {
-		return TrackState{}, fmt.Errorf("track %s has no common channel count", id)
+			return TrackState{}, fmt.Errorf("track %s has no common channel count", id)
 		}
 		state.SampleRate = sampleRates[len(sampleRates)-1]
 		state.Channels = channelsList[len(channelsList)-1]
@@ -189,7 +189,7 @@ func negotiateTrack(track TrackProposal, owner Peer, answers map[string]TrackPro
 	if proposal.Kind == "video" {
 		resolutions := commonSizes(sizeGroups...)
 		if len(resolutions) == 0 {
-		return TrackState{}, fmt.Errorf("track %s has no common resolution", id)
+			return TrackState{}, fmt.Errorf("track %s has no common resolution", id)
 		}
 		state.Resolution = resolutions[len(resolutions)-1]
 	}

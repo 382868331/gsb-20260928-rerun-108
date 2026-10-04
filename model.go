@@ -91,17 +91,17 @@ type PeerResponse struct {
 }
 
 type NegotiationVersion struct {
-	SessionID string          `json:"session_id"`
-	Revision  int             `json:"revision"`
-	Kind      VersionKind     `json:"kind"`
-	BasedOn   int             `json:"based_on"`
-	Initiator string          `json:"initiator"`
-	Status    VersionStatus   `json:"status"`
-	Reason    string          `json:"reason,omitempty"`
-	Participants []string        `json:"participants"`
-	Responses map[string]PeerResponse `json:"responses,omitempty"`
-	Proposal  []TrackProposal `json:"proposal,omitempty"`
-	Answer    []TrackProposal `json:"answer,omitempty"`
+	SessionID    string                  `json:"session_id"`
+	Revision     int                     `json:"revision"`
+	Kind         VersionKind             `json:"kind"`
+	BasedOn      int                     `json:"based_on"`
+	Initiator    string                  `json:"initiator"`
+	Status       VersionStatus           `json:"status"`
+	Reason       string                  `json:"reason,omitempty"`
+	Participants []string                `json:"participants"`
+	Responses    map[string]PeerResponse `json:"responses,omitempty"`
+	Proposal     []TrackProposal         `json:"proposal,omitempty"`
+	Answer       []TrackProposal         `json:"answer,omitempty"`
 }
 
 type MessageType string
