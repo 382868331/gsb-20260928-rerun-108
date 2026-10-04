@@ -30,6 +30,7 @@ type TrackProposal struct {
 	ID          string   `json:"id"`
 	Kind        string   `json:"kind"`
 	Owner       string   `json:"owner,omitempty"`
+	SourceID    string   `json:"source_id,omitempty"`
 	Enabled     bool     `json:"enabled"`
 	Direction   string   `json:"direction,omitempty"`
 	Codecs      []string `json:"codecs,omitempty"`
@@ -48,8 +49,9 @@ type Peer struct {
 
 type TrackState struct {
 	ID          string   `json:"id"`
+	SourceID    string   `json:"source_id"`
 	Kind        string   `json:"kind"`
-	Owner       string   `json:"owner"`
+	Publisher   string   `json:"publisher"`
 	Direction   string   `json:"direction"`
 	Codec       string   `json:"codec"`
 	BitrateBps  int      `json:"bitrate_bps"`
@@ -65,6 +67,16 @@ type Session struct {
 	Peers    []string     `json:"peers"`
 	Tracks   []TrackState `json:"tracks"`
 	Revision int          `json:"revision"`
+	Participants  []Participation `json:"participants,omitempty"`
+	NextParticipantSeq int         `json:"next_participant_seq,omitempty"`
+}
+
+type Participation struct {
+	ParticipationID string `json:"participation_id"`
+	PersonID        string `json:"person_id"`
+	DisplayName     string `json:"display_name"`
+	Online          bool   `json:"online"`
+	Present         bool   `json:"present"`
 }
 
 type VersionStatus string
@@ -84,10 +96,18 @@ const (
 	VersionKindMembership VersionKind = "membership"
 )
 
+const (
+	TrackPending  = "pending"
+	TrackAccepted = "accepted"
+	TrackRejected = "rejected"
+	TrackWithdrawn = "withdrawn"
+)
+
 type PeerResponse struct {
-	Status VersionStatus   `json:"status"`
-	Reason string          `json:"reason,omitempty"`
-	Answer []TrackProposal `json:"answer,omitempty"`
+	Status      VersionStatus     `json:"status"`
+	Reason      string            `json:"reason,omitempty"`
+	Answer      []TrackProposal   `json:"answer,omitempty"`
+	TrackStatus map[string]string `json:"track_status,omitempty"`
 }
 
 type NegotiationVersion struct {
@@ -98,8 +118,11 @@ type NegotiationVersion struct {
 	Initiator string          `json:"initiator"`
 	Status    VersionStatus   `json:"status"`
 	Reason    string          `json:"reason,omitempty"`
-	Participants []string        `json:"participants"`
+	Participants []string        `json:"participants,omitempty"`
+	Targets      []string        `json:"targets,omitempty"`
+	Withdrawn    []string        `json:"withdrawn,omitempty"`
 	Responses map[string]PeerResponse `json:"responses,omitempty"`
+	Baseline  []TrackState    `json:"baseline,omitempty"`
 	Proposal  []TrackProposal `json:"proposal,omitempty"`
 	Answer    []TrackProposal `json:"answer,omitempty"`
 }
