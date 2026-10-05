@@ -51,7 +51,7 @@ type TrackState struct {
 	ID          string   `json:"id"`
 	SourceID    string   `json:"source_id"`
 	Kind        string   `json:"kind"`
-	Publisher   string   `json:"publisher"`
+	Owner       string   `json:"owner"`
 	Direction   string   `json:"direction"`
 	Codec       string   `json:"codec"`
 	BitrateBps  int      `json:"bitrate_bps"`
@@ -63,20 +63,30 @@ type TrackState struct {
 }
 
 type Session struct {
-	ID       string       `json:"id"`
-	Peers    []string     `json:"peers"`
-	Tracks   []TrackState `json:"tracks"`
-	Revision int          `json:"revision"`
-	Participants  []Participation `json:"participants,omitempty"`
-	NextParticipantSeq int         `json:"next_participant_seq,omitempty"`
+	ID                 string          `json:"id"`
+	Peers              []string        `json:"peers"`
+	Tracks             []TrackState    `json:"tracks"`
+	Revision           int             `json:"revision"`
+	Participants       []Participation `json:"participants,omitempty"`
+	NextParticipantSeq int             `json:"next_participant_seq,omitempty"`
 }
 
 type Participation struct {
 	ParticipationID string `json:"participation_id"`
 	PersonID        string `json:"person_id"`
+	Generation      int    `json:"generation"`
 	DisplayName     string `json:"display_name"`
 	Online          bool   `json:"online"`
 	Present         bool   `json:"present"`
+}
+
+type DuplicateAnswer struct {
+	Responder   string            `json:"responder"`
+	PersonID    string            `json:"person_id,omitempty"`
+	AtRevision  int               `json:"at_revision"`
+	Reason      string            `json:"reason,omitempty"`
+	Answer      []TrackProposal   `json:"answer,omitempty"`
+	TrackStatus map[string]string `json:"track_status,omitempty"`
 }
 
 type VersionStatus string
@@ -97,9 +107,9 @@ const (
 )
 
 const (
-	TrackPending  = "pending"
-	TrackAccepted = "accepted"
-	TrackRejected = "rejected"
+	TrackPending   = "pending"
+	TrackAccepted  = "accepted"
+	TrackRejected  = "rejected"
 	TrackWithdrawn = "withdrawn"
 )
 
@@ -111,20 +121,21 @@ type PeerResponse struct {
 }
 
 type NegotiationVersion struct {
-	SessionID string          `json:"session_id"`
-	Revision  int             `json:"revision"`
-	Kind      VersionKind     `json:"kind"`
-	BasedOn   int             `json:"based_on"`
-	Initiator string          `json:"initiator"`
-	Status    VersionStatus   `json:"status"`
-	Reason    string          `json:"reason,omitempty"`
-	Participants []string        `json:"participants,omitempty"`
-	Targets      []string        `json:"targets,omitempty"`
-	Withdrawn    []string        `json:"withdrawn,omitempty"`
-	Responses map[string]PeerResponse `json:"responses,omitempty"`
-	Baseline  []TrackState    `json:"baseline,omitempty"`
-	Proposal  []TrackProposal `json:"proposal,omitempty"`
-	Answer    []TrackProposal `json:"answer,omitempty"`
+	SessionID    string                  `json:"session_id"`
+	Revision     int                     `json:"revision"`
+	Kind         VersionKind             `json:"kind"`
+	BasedOn      int                     `json:"based_on"`
+	Initiator    string                  `json:"initiator"`
+	Status       VersionStatus           `json:"status"`
+	Reason       string                  `json:"reason,omitempty"`
+	Participants []string                `json:"participants,omitempty"`
+	Targets      []string                `json:"targets,omitempty"`
+	Withdrawn    []string                `json:"withdrawn,omitempty"`
+	Responses    map[string]PeerResponse `json:"responses,omitempty"`
+	Duplicates   []DuplicateAnswer       `json:"duplicates,omitempty"`
+	Baseline     []TrackState            `json:"baseline,omitempty"`
+	Proposal     []TrackProposal         `json:"proposal,omitempty"`
+	Answer       []TrackProposal         `json:"answer,omitempty"`
 }
 
 type MessageType string

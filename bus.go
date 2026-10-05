@@ -28,6 +28,17 @@ func (b *Bus) Register(peerID string, handler Handler) {
 	b.handlers[peerID] = handler
 }
 
+// Unregister removes a participation identity and drops anything still
+// queued for it. A same-name re-entry registers a new identity, so queued
+// messages addressed to the old generation must never reach the new one.
+func (b *Bus) Unregister(peerID string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	delete(b.handlers, peerID)
+	delete(b.queues, peerID)
+	delete(b.online, peerID)
+}
+
 func (b *Bus) Connect(peerID string) []Message {
 	b.mu.Lock()
 	b.online[peerID] = true

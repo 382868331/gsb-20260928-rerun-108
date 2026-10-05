@@ -158,6 +158,162 @@ func testCapabilities() map[string]TrackCapability {
 	}
 }
 
+func multiPartyService(t *testing.T) (*Service, string) {
+	t.Helper()
+	store := NewStore(filepath.Join(t.TempDir(), "data"))
+	service, err := NewService(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"alice", "bob", "carol"} {
+		service.RegisterPeer(Peer{ID: id, Capabilities: testCapabilities()})
+	}
+	sessionID := "meet"
+	if _, err := service.CreateSession(sessionID, "alice", "bob"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.BootstrapMultiParty(sessionID, []string{"alice", "bob"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.AddParticipant(sessionID, "carol", "Carol"); err != nil {
+		t.Fatal(err)
+	}
+	return service, sessionID
+}
+
+func TestPartialAcceptanceIsPerParticipant(t *testing.T) {
+	service, sessionID := multiPartyService(t)
+	offer, err := service.CreateOffer(sessionID, "alice", testFullProposal())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, version, err := service.AnswerOffer(sessionID, "bob", offer.Revision, testFullProposal())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if version.Status != VersionPartial {
+		t.Fatalf("expected partial after one of two answers, got %s", version.Status)
+	}
+	audioOnly := testAudioOnlyProposal()
+	_, version, err = service.AnswerOffer(sessionID, "carol", offer.Revision, audioOnly)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if version.Status != VersionAccepted {
+		t.Fatalf("expected accepted after both current targets answer, got %s", version.Status)
+	}
+	session, _ := service.Session(sessionID)
+	video := findState(session.Tracks, "video-1")
+	if video == nil || len(video.Subscribers) != 1 || video.Subscribers[0] != "bob" {
+		t.Fatalf("video must be visible only to bob: %+v", video)
+	}
+	audio := findState(session.Tracks, "audio-1")
+	if audio == nil || len(audio.Subscribers) != 2 {
+		t.Fatalf("audio must be visible to bob and carol: %+v", audio)
+	}
+}
+
+func TestSameNameReentryIsNewGenerationAndIsolatesState(t *testing.T) {
+	service, sessionID := multiPartyService(t)
+	offer, _ := service.CreateOffer(sessionID, "alice", testFullProposal())
+	if _, _, err := service.AnswerOffer(sessionID, "bob", offer.Revision, testFullProposal()); err != nil {
+		t.Fatal(err)
+	}
+	audioOnly := testAudioOnlyProposal()
+	if _, _, err := service.AnswerOffer(sessionID, "carol", offer.Revision, audioOnly); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.LeaveParticipant(sessionID, "carol"); err != nil {
+		t.Fatal(err)
+	}
+	session, _ := service.Session(sessionID)
+	audio := findState(session.Tracks, "audio-1")
+	if audio == nil || len(audio.Subscribers) != 1 || audio.Subscribers[0] != "bob" {
+		t.Fatalf("carol subscription must be gone after leave: %+v", audio)
+	}
+	carol2, err := service.AddParticipant(sessionID, "carol", "Carol")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if carol2.ParticipationID != "carol#2" || carol2.Generation != 2 {
+		t.Fatalf("unexpected re-entry identity: %+v", carol2)
+	}
+	// New generation cannot complete the old generation's targeted version.
+	_, _, err = service.AnswerOffer(sessionID, carol2.ParticipationID, offer.Revision, testFullProposal())
+	if err != ErrParticipant {
+		t.Fatalf("new generation must not answer old version, got %v", err)
+	}
+	old, _ := service.Version(sessionID, offer.Revision)
+	if len(old.Responses) != 2 {
+		t.Fatalf("old carol decision must remain auditable, got responses %v", old.Responses)
+	}
+}
+
+func TestLateConsentAfterLeaveIsRecordedButNotApplied(t *testing.T) {
+	service, sessionID := multiPartyService(t)
+	offer, _ := service.CreateOffer(sessionID, "alice", testFullProposal())
+	if _, _, err := service.AnswerOffer(sessionID, "carol", offer.Revision, testAudioOnlyProposal()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.LeaveParticipant(sessionID, "bob"); err != nil {
+		t.Fatal(err)
+	}
+	_, version, err := service.AnswerOffer(sessionID, "bob", offer.Revision, testFullProposal())
+	if err != ErrParticipant {
+		t.Fatalf("departed bob late answer must fail, got %v", err)
+	}
+	if len(version.Duplicates) != 1 || version.Duplicates[0].Responder != "bob" {
+		t.Fatalf("late consent must be archived: %+v", version.Duplicates)
+	}
+	session, _ := service.Session(sessionID)
+	if video := findState(session.Tracks, "video-1"); video != nil {
+		t.Fatalf("late consent must not resurrect video: %+v", video)
+	}
+	if version.Status == VersionAccepted {
+		t.Fatalf("departed consent must not complete acceptance, got %s", version.Status)
+	}
+}
+
+func TestDuplicateAnswerAfterRestartIsStoredButNotApplied(t *testing.T) {
+	service, sessionID := multiPartyService(t)
+	offer, _ := service.CreateOffer(sessionID, "alice", testFullProposal())
+	if _, _, err := service.AnswerOffer(sessionID, "bob", offer.Revision, testFullProposal()); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := service.AnswerOffer(sessionID, "carol", offer.Revision, testAudioOnlyProposal()); err != nil {
+		t.Fatal(err)
+	}
+	root := service.store.root
+	reopened, err := NewService(NewStore(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"alice", "bob", "carol"} {
+		reopened.RegisterPeer(Peer{ID: id, Capabilities: testCapabilities()})
+	}
+	before, _ := reopened.Session(sessionID)
+	_, version, err := reopened.AnswerOffer(sessionID, "bob", offer.Revision, testFullProposal())
+	if err != ErrStale {
+		t.Fatalf("duplicate after restart must be stale, got %v", err)
+	}
+	if len(version.Duplicates) != 1 {
+		t.Fatalf("expected one archived duplicate, got %d", len(version.Duplicates))
+	}
+	after, _ := reopened.Session(sessionID)
+	if len(after.Tracks) != len(before.Tracks) {
+		t.Fatalf("duplicate answer changed active tracks")
+	}
+}
+
+func findState(tracks []TrackState, id string) *TrackState {
+	for i := range tracks {
+		if tracks[i].ID == id {
+			return &tracks[i]
+		}
+	}
+	return nil
+}
+
 func testFullProposal() []TrackProposal {
 	return []TrackProposal{
 		{ID: "audio-1", Kind: "audio", Enabled: true, Direction: string(DirectionSendRecv), Codecs: []string{"opus"}, BitrateMin: 32000, BitrateMax: 64000, SampleRates: []int{48000}, Channels: []int{2}},

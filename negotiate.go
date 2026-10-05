@@ -127,38 +127,29 @@ func commonSizes(groups ...[]Size) []Size {
 	return out
 }
 
-func negotiateTrack(track TrackProposal, owner Peer, answers map[string]TrackProposal, answerers map[string]Peer, revision int) (TrackState, error) {
-	offerer := owner
-	proposal := track
+// negotiatePair computes the active track state for one track as accepted by
+// one responder. Intersection is taken over the owner capability, the offer
+// parameters, the responder capability and the responder answer parameters.
+func negotiatePair(track TrackProposal, owner, responder Peer, answered TrackProposal, revision int) (TrackState, error) {
 	id := track.ID
-	groups := [][]string{
-		offerer.Capabilities[id].Directions,
-		[]string{proposal.Direction},
+	offeredCap, ok := owner.Capabilities[id]
+	if !ok {
+		return TrackState{}, fmt.Errorf("track %s is unsupported by owner %s", id, owner.ID)
 	}
-	codecGroups := [][]string{
-		offerer.Capabilities[id].Codecs,
-		proposal.Codecs,
+	answeredCap, ok := responder.Capabilities[id]
+	if !ok {
+		return TrackState{}, fmt.Errorf("track %s is unsupported by responder %s", id, responder.ID)
 	}
-	minBitrate := maxInt(proposal.BitrateMin, offerer.Capabilities[id].BitrateMin)
-	maxBitrate := minInt(proposal.BitrateMax, offerer.Capabilities[id].BitrateMax)
-	sampleGroups := [][]int{offerer.Capabilities[id].SampleRates, proposal.SampleRates}
-	channelGroups := [][]int{offerer.Capabilities[id].Channels, proposal.Channels}
-	sizeGroups := [][]Size{offerer.Capabilities[id].Resolutions, proposal.Resolutions}
-	for responder, answered := range answers {
-		answerer := answerers[responder]
-		groups = append(groups, answerer.Capabilities[id].Directions, []string{answered.Direction})
-		codecGroups = append(codecGroups, answerer.Capabilities[id].Codecs, answered.Codecs)
-		minBitrate = maxInt(minBitrate, answered.BitrateMin, answerer.Capabilities[id].BitrateMin)
-		maxBitrate = minInt(maxBitrate, answered.BitrateMax, answerer.Capabilities[id].BitrateMax)
-		sampleGroups = append(sampleGroups, answerer.Capabilities[id].SampleRates, answered.SampleRates)
-		channelGroups = append(channelGroups, answerer.Capabilities[id].Channels, answered.Channels)
-		sizeGroups = append(sizeGroups, answerer.Capabilities[id].Resolutions, answered.Resolutions)
+	if track.Kind != answered.Kind {
+		return TrackState{}, fmt.Errorf("track %s kind mismatch", id)
 	}
-	directions := commonStrings(groups...)
+	directions := commonStrings(offeredCap.Directions, []string{track.Direction}, answeredCap.Directions, []string{answered.Direction})
+	codecs := commonStrings(offeredCap.Codecs, track.Codecs, answeredCap.Codecs, answered.Codecs)
+	minBitrate := maxInt(track.BitrateMin, offeredCap.BitrateMin, answered.BitrateMin, answeredCap.BitrateMin)
+	maxBitrate := minInt(track.BitrateMax, offeredCap.BitrateMax, answered.BitrateMax, answeredCap.BitrateMax)
 	if len(directions) == 0 {
 		return TrackState{}, fmt.Errorf("track %s has no common direction", id)
 	}
-	codecs := commonStrings(codecGroups...)
 	if len(codecs) == 0 {
 		return TrackState{}, fmt.Errorf("track %s has no common codec", id)
 	}
@@ -167,88 +158,84 @@ func negotiateTrack(track TrackProposal, owner Peer, answers map[string]TrackPro
 	}
 	state := TrackState{
 		ID:         id,
-		Kind:       proposal.Kind,
-		Owner:      proposal.Owner,
+		SourceID:   track.SourceID,
+		Kind:       track.Kind,
+		Owner:      track.Owner,
 		Direction:  directions[len(directions)-1],
 		Codec:      codecs[len(codecs)-1],
 		BitrateBps: maxBitrate,
 		Revision:   revision,
 	}
-	if proposal.Kind == "audio" {
-		sampleRates := commonInts(sampleGroups...)
+	if track.Kind == "audio" {
+		sampleRates := commonInts(offeredCap.SampleRates, track.SampleRates, answeredCap.SampleRates, answered.SampleRates)
 		if len(sampleRates) == 0 {
-		return TrackState{}, fmt.Errorf("track %s has no common sample rate", id)
+			return TrackState{}, fmt.Errorf("track %s has no common sample rate", id)
 		}
-		channelsList := commonInts(channelGroups...)
+		channelsList := commonInts(offeredCap.Channels, track.Channels, answeredCap.Channels, answered.Channels)
 		if len(channelsList) == 0 {
-		return TrackState{}, fmt.Errorf("track %s has no common channel count", id)
+			return TrackState{}, fmt.Errorf("track %s has no common channel count", id)
 		}
 		state.SampleRate = sampleRates[len(sampleRates)-1]
 		state.Channels = channelsList[len(channelsList)-1]
 	}
-	if proposal.Kind == "video" {
-		resolutions := commonSizes(sizeGroups...)
+	if track.Kind == "video" {
+		resolutions := commonSizes(offeredCap.Resolutions, track.Resolutions, answeredCap.Resolutions, answered.Resolutions)
 		if len(resolutions) == 0 {
-		return TrackState{}, fmt.Errorf("track %s has no common resolution", id)
+			return TrackState{}, fmt.Errorf("track %s has no common resolution", id)
 		}
 		state.Resolution = resolutions[len(resolutions)-1]
 	}
 	return state, nil
 }
 
-func negotiateTracks(peers map[string]Peer, initiator, responder string, offer, answer []TrackProposal) ([]TrackState, error) {
-	offerer, ok := peers[initiator]
+// negotiatePairSet validates and negotiates a complete offer/answer pair.
+// Every offered track must appear in the answer. Disabled tracks on either
+// side are dropped; parameter failures make the whole exchange invalid so the
+// previous session stays intact (legacy two-party semantics).
+func negotiatePairSet(peers map[string]Peer, ownerID, responderID string, offer, answer []TrackProposal, revision int) ([]TrackState, error) {
+	owner, ok := peers[ownerID]
 	if !ok {
-		return nil, fmt.Errorf("unknown peer %s", initiator)
+		return nil, fmt.Errorf("unknown participant %s", ownerID)
 	}
-	answerer, ok := peers[responder]
+	responder, ok := peers[responderID]
 	if !ok {
-		return nil, fmt.Errorf("unknown peer %s", responder)
+		return nil, fmt.Errorf("unknown participant %s", responderID)
 	}
 	offers := proposalIndex(offer)
 	answers := proposalIndex(answer)
 	if len(offers) != len(offer) || len(answers) != len(answer) {
 		return nil, fmt.Errorf("duplicate track id in proposal")
 	}
-	if len(offers) != len(answers) {
-		return nil, fmt.Errorf("offer and answer must describe the same track set")
-	}
-
 	ids := make([]string, 0, len(offers))
-	for id := range offers {
-		if _, ok := answers[id]; !ok {
+	for id, offered := range offers {
+		answered, ok := answers[id]
+		if !ok {
 			return nil, fmt.Errorf("track %s missing from answer", id)
+		}
+		if offered.Kind != answered.Kind {
+			return nil, fmt.Errorf("track %s kind mismatch", id)
+		}
+		if _, ok := owner.Capabilities[id]; !ok {
+			return nil, fmt.Errorf("track %s is unsupported by %s", id, ownerID)
+		}
+		if _, ok := responder.Capabilities[id]; !ok {
+			return nil, fmt.Errorf("track %s is unsupported by %s", id, responderID)
 		}
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
-
 	result := make([]TrackState, 0, len(ids))
 	for _, id := range ids {
 		offered := offers[id]
 		answered := answers[id]
-		if offered.Kind != answered.Kind {
-			return nil, fmt.Errorf("track %s kind mismatch", id)
-		}
-		offeredCap, ok := offerer.Capabilities[id]
-		if !ok {
-			return nil, fmt.Errorf("track %s is unsupported by %s", id, initiator)
-		}
-		answeredCap, ok := answerer.Capabilities[id]
-		if !ok {
-			return nil, fmt.Errorf("track %s is unsupported by %s", id, responder)
-		}
-		if offeredCap.Kind != offered.Kind || answeredCap.Kind != offered.Kind {
-			return nil, fmt.Errorf("track %s kind is outside capability metadata", id)
-		}
-		offered.Owner = initiator
+		offered.Owner = ownerID
 		if len(offered.Subscribers) == 0 {
-			offered.Subscribers = []string{responder}
+			offered.Subscribers = []string{responderID}
 		}
 		if !offered.Enabled || !answered.Enabled {
 			continue
 		}
-		state, err := negotiateTrack(offered, offerer, map[string]TrackProposal{responder: answered}, map[string]Peer{responder: answerer}, 0)
+		state, err := negotiatePair(offered, owner, responder, answered, revision)
 		if err != nil {
 			return nil, err
 		}

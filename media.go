@@ -7,6 +7,8 @@ import (
 
 type MediaFrame struct {
 	TrackID   string
+	SourceID  string
+	Owner     string
 	Kind      string
 	Sequence  int
 	Timestamp int64
@@ -27,6 +29,8 @@ func (m *LocalMediaSource) Produce(tracks []TrackState) []MediaFrame {
 		}
 		frames = append(frames, MediaFrame{
 			TrackID:   track.ID,
+			SourceID:  track.SourceID,
+			Owner:     track.Owner,
 			Kind:      track.Kind,
 			Sequence:  m.sequence,
 			Timestamp: int64(m.sequence) * 20,
@@ -42,7 +46,8 @@ func describeTracks(tracks []TrackState) string {
 	}
 	parts := make([]string, 0, len(tracks))
 	for _, track := range tracks {
-		parts = append(parts, fmt.Sprintf("%s(%s,%s,%dbps,r%d)", track.ID, track.Kind, track.Codec, track.BitrateBps, track.Revision))
+		subscribers := append([]string(nil), track.Subscribers...)
+		parts = append(parts, fmt.Sprintf("%s[src=%s,owner=%s](%s,%s,%dbps,sub=%s)", track.ID, track.SourceID, track.Owner, track.Kind, track.Codec, track.BitrateBps, strings.Join(subscribers, "+")))
 	}
 	return strings.Join(parts, ", ")
 }
