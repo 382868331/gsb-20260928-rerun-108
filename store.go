@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -136,17 +135,4 @@ func peerIndex(peers []string, id string) int {
 		}
 	}
 	return -1
-}
-
-func otherPeer(session *Session, id string) (string, error) {
-	if len(session.Peers) != 2 {
-		return "", fmt.Errorf("session %s is not a two-party session", session.ID)
-	}
-	if session.Peers[0] == id {
-		return session.Peers[1], nil
-	}
-	if session.Peers[1] == id {
-		return session.Peers[0], nil
-	}
-	return "", fmt.Errorf("peer %s is not in session %s", id, session.ID)
 }

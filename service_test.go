@@ -170,3 +170,192 @@ func testAudioOnlyProposal() []TrackProposal {
 	proposal[1].Enabled = false
 	return proposal
 }
+
+func newMultiService(t *testing.T) *Service {
+	t.Helper()
+	service := newTestService(t)
+	service.RegisterPeer(Peer{ID: "carol", Capabilities: testCapabilities()})
+	if _, _, err := service.JoinSession("call", "carol", "Carol"); err != nil {
+		t.Fatal(err)
+	}
+	return service
+}
+
+func TestPartialAcceptanceThenLeaveFinalizes(t *testing.T) {
+	service := newMultiService(t)
+	offer, err := service.CreateOffer("call", "alice", testFullProposal())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, version, err := service.AnswerOffer("call", "bob", offer.Revision, testFullProposal())
+	if err != nil || version.Status != VersionPartial {
+		t.Fatalf("expected partial after one answer, got %v %v", version, err)
+	}
+	if session, _ := service.Session("call"); len(session.Tracks) != 0 {
+		t.Fatalf("partial offer must not change session, got %+v", session.Tracks)
+	}
+	if _, err := service.LeaveSession("call", "carol"); err != nil {
+		t.Fatal(err)
+	}
+	version, _ = service.Version("call", offer.Revision)
+	if version.Status != VersionAccepted {
+		t.Fatalf("departed target must not block acceptance, got %s", version.Status)
+	}
+	if _, _, err := service.AnswerOffer("call", "carol", offer.Revision, testFullProposal()); !errors.Is(err, ErrParticipant) {
+		t.Fatalf("late consent from removed identity must fail, got %v", err)
+	}
+}
+
+func TestRejoinMintsNewGenerationAndConsentIsNotStitched(t *testing.T) {
+	service := newMultiService(t)
+	offer, _ := service.CreateOffer("call", "alice", testFullProposal())
+	if _, _, err := service.AnswerOffer("call", "carol", offer.Revision, testFullProposal()); err != nil {
+		t.Fatal(err)
+	}
+	if _, v, err := service.AnswerOffer("call", "bob", offer.Revision, testFullProposal()); err != nil || v.Status != VersionAccepted {
+		t.Fatalf("setup offer failed: %v %v", v, err)
+	}
+	if _, err := service.LeaveSession("call", "carol"); err != nil {
+		t.Fatal(err)
+	}
+	_, carol2, err := service.JoinSession("call", "carol", "Carol")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if carol2.ParticipationID != "carol#2" {
+		t.Fatalf("rejoin must mint a new generation, got %s", carol2.ParticipationID)
+	}
+	// The old generation's consent must not complete the new offer round.
+	second, err := service.CreateOffer("call", "alice", testFullProposal())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsString(second.Targets, "carol#2") || containsString(second.Targets, "carol") {
+		t.Fatalf("targets must use current generations only: %+v", second.Targets)
+	}
+	if _, v, err := service.AnswerOffer("call", "bob", second.Revision, testFullProposal()); err != nil || v.Status != VersionPartial {
+		t.Fatalf("old generation consent must not stitch into acceptance: %v %v", v, err)
+	}
+	if _, _, err := service.AnswerOffer("call", "carol", second.Revision, testFullProposal()); !errors.Is(err, ErrParticipant) {
+		t.Fatalf("old identity must not answer, got %v", err)
+	}
+	if _, v, err := service.AnswerOffer("call", "carol#2", second.Revision, testFullProposal()); err != nil || v.Status != VersionAccepted {
+		t.Fatalf("new generation consent should complete: %v %v", v, err)
+	}
+	_ = offer
+}
+
+func TestSessionForShowsOnlyAcceptedSources(t *testing.T) {
+	service := newMultiService(t)
+	offer, _ := service.CreateOffer("call", "alice", testFullProposal())
+	if _, _, err := service.AnswerOffer("call", "bob", offer.Revision, testFullProposal()); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := service.AnswerOffer("call", "carol", offer.Revision, testFullProposal()); err != nil {
+		t.Fatal(err)
+	}
+	carolOffer, err := service.CreateOffer("call", "carol", testAudioOnlyProposal())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := service.AnswerOffer("call", "alice", carolOffer.Revision, testAudioOnlyProposal()); err != nil {
+		t.Fatal(err)
+	}
+	// bob explicitly declines carol's tracks; the offer still completes.
+	declined := testAudioOnlyProposal()
+	for i := range declined {
+		declined[i].Enabled = false
+	}
+	if _, v, err := service.AnswerOffer("call", "bob", carolOffer.Revision, declined); err != nil || v.Status != VersionAccepted {
+		t.Fatalf("offer should complete once all targets answered: %v %v", v, err)
+	}
+	// bob never accepted carol's tracks: bob sees alice's tracks only.
+	bobView, err := service.SessionFor("call", "bob")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, track := range bobView.Tracks {
+		if track.Owner == "carol" {
+			t.Fatalf("bob must not see sources it never accepted: %+v", track)
+		}
+	}
+	if len(bobView.Tracks) != 2 {
+		t.Fatalf("bob should see alice's two tracks, got %+v", bobView.Tracks)
+	}
+	carolView, _ := service.SessionFor("call", "carol")
+	if len(carolView.Tracks) != 3 { // own audio + alice's accepted two
+		t.Fatalf("carol view mismatch: %+v", carolView.Tracks)
+	}
+	if _, err := service.SessionFor("call", "carol#9"); !errors.Is(err, ErrParticipant) {
+		t.Fatalf("unknown generation must be rejected, got %v", err)
+	}
+}
+
+func TestLeaveWithdrawsTracksAndFreesTrackIDs(t *testing.T) {
+	service := newMultiService(t)
+	offer, _ := service.CreateOffer("call", "carol", testAudioOnlyProposal())
+	service.AnswerOffer("call", "alice", offer.Revision, testAudioOnlyProposal())
+	if _, v, err := service.AnswerOffer("call", "bob", offer.Revision, testAudioOnlyProposal()); err != nil || v.Status != VersionAccepted {
+		t.Fatalf("setup offer failed: %v %v", v, err)
+	}
+	if _, err := service.LeaveSession("call", "carol"); err != nil {
+		t.Fatal(err)
+	}
+	session, _ := service.Session("call")
+	for _, track := range session.Tracks {
+		if track.Owner == "carol" {
+			t.Fatalf("leaver tracks must be withdrawn: %+v", track)
+		}
+	}
+	if _, carol2, _ := service.JoinSession("call", "carol", "Carol"); carol2.ParticipationID != "carol#2" {
+		t.Fatal("expected carol#2")
+	}
+	reoffer, err := service.CreateOffer("call", "carol#2", testAudioOnlyProposal())
+	if err != nil {
+		t.Fatalf("track ids must be reusable after withdrawal: %v", err)
+	}
+	service.AnswerOffer("call", "alice", reoffer.Revision, testAudioOnlyProposal())
+	if _, v, err := service.AnswerOffer("call", "bob", reoffer.Revision, testAudioOnlyProposal()); err != nil || v.Status != VersionAccepted {
+		t.Fatalf("reoffer with reused ids failed: %v %v", v, err)
+	}
+}
+
+func TestDuplicateAnswerIdempotentAcrossReopen(t *testing.T) {
+	dir := t.TempDir()
+	build := func() *Service {
+		service, err := NewService(NewStore(dir))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, id := range []string{"alice", "bob", "carol"} {
+			service.RegisterPeer(Peer{ID: id, Capabilities: testCapabilities()})
+		}
+		return service
+	}
+	service := build()
+	if _, err := service.CreateSession("call", "bob", "alice"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := service.JoinSession("call", "carol", "Carol"); err != nil {
+		t.Fatal(err)
+	}
+	offer, _ := service.CreateOffer("call", "alice", testFullProposal())
+	if _, _, err := service.AnswerOffer("call", "bob", offer.Revision, testFullProposal()); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened := build()
+	_, dup, err := reopened.AnswerOffer("call", "bob", offer.Revision, testFullProposal())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(dup.Responses) != 1 || dup.Status != VersionPartial {
+		t.Fatalf("duplicate answer must be a no-op, got %+v", dup)
+	}
+	if _, v, err := reopened.AnswerOffer("call", "carol", offer.Revision, testFullProposal()); err != nil || v.Status != VersionAccepted {
+		t.Fatalf("final answer should complete after reopen: %v %v", v, err)
+	}
+	if _, stale, err := reopened.AnswerOffer("call", "bob", offer.Revision, testFullProposal()); !errors.Is(err, ErrStale) || stale.Status != VersionAccepted {
+		t.Fatalf("answer after acceptance must be stale, got %v %v", stale, err)
+	}
+}

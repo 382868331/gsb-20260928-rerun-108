@@ -44,12 +44,44 @@ func (e *Endpoint) Offer(target string, proposal []TrackProposal) (*NegotiationV
 	return version, err
 }
 
+// OfferAll sends the offer to every still-present target participation.
+func (e *Endpoint) OfferAll(proposal []TrackProposal) (*NegotiationVersion, error) {
+	version, err := e.service.CreateOffer(e.sessionID, e.peerID, proposal)
+	if err != nil {
+		return nil, err
+	}
+	if version.Status == VersionSuperseded {
+		return version, nil
+	}
+	for _, target := range version.Targets {
+		if err := e.bus.Send(Message{
+			Type:      MessageOffer,
+			SessionID: e.sessionID,
+			From:      e.peerID,
+			To:        target,
+			Revision:  version.Revision,
+			Payload:   proposal,
+		}); err != nil {
+			return version, err
+		}
+	}
+	return version, nil
+}
+
 func (e *Endpoint) Handle(message Message) {
 	sessionID := message.SessionID
 	switch message.Type {
 	case MessageOffer:
+		if message.To != e.peerID {
+			return
+		}
+		participation, err := e.service.Participation(sessionID, e.peerID)
+		if err != nil || !participation.Present {
+			fmt.Printf("%s 是失效身份，忽略发给旧参与的提案 r%d（来自 %s）\n", e.peerID, message.Revision, message.From)
+			return
+		}
 		version, err := e.service.Version(sessionID, message.Revision)
-		if err == nil && version.Status != VersionProposing {
+		if err == nil && version.Status != VersionProposing && version.Status != VersionPartial {
 			fmt.Printf("%s 忽略 %s 的旧提案 r%d：%s\n", e.peerID, message.From, message.Revision, version.Reason)
 			return
 		}
@@ -63,7 +95,11 @@ func (e *Endpoint) Handle(message Message) {
 			fmt.Printf("r%d 协商失败，保留旧会话：%s\n", message.Revision, err)
 			return
 		}
-		fmt.Printf("r%d 协商成功，%s 生效轨道：%s\n", version.Revision, session.ID, describeTracks(session.Tracks))
+		if version.Status == VersionAccepted {
+			fmt.Printf("r%d 协商成功，%s 生效轨道：%s\n", version.Revision, session.ID, describeTracks(session.Tracks))
+		} else {
+			fmt.Printf("%s 已接受 r%d，等待其他成员答复（状态=%s）\n", e.peerID, version.Revision, version.Status)
+		}
 	case MessageNotice:
 		fmt.Printf("%s 收到通知：%s\n", e.peerID, message.Text)
 	}

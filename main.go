@@ -18,67 +18,111 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	alice := Peer{ID: "alice", Capabilities: demoCapabilities()}
-	bob := Peer{ID: "bob", Capabilities: demoCapabilities()}
-	service.RegisterPeer(alice)
-	service.RegisterPeer(bob)
-	if _, err := service.CreateSession(DefaultSessionID, bob.ID, alice.ID); err != nil {
+	for _, id := range []string{"alice", "bob", "carol"} {
+		service.RegisterPeer(Peer{ID: id, Capabilities: demoCapabilities()})
+	}
+	if _, err := service.CreateSession(DefaultSessionID, "bob", "alice"); err != nil {
 		panic(err)
+	}
+	if _, carol, err := service.JoinSession(DefaultSessionID, "carol", "Carol"); err != nil {
+		panic(err)
+	} else {
+		fmt.Printf("Carol 加入会话，参与身份=%s（世代 1）\n", carol.ParticipationID)
 	}
 
 	bus := NewBus()
-	aliceEndpoint := NewEndpoint(DefaultSessionID, alice.ID, service, bus)
-	bobEndpoint := NewEndpoint(DefaultSessionID, bob.ID, service, bus)
-	aliceEndpoint.Connect()
-	bobEndpoint.Connect()
+	alice := NewEndpoint(DefaultSessionID, "alice", service, bus)
+	bob := NewEndpoint(DefaultSessionID, "bob", service, bus)
+	carol := NewEndpoint(DefaultSessionID, "carol", service, bus)
+	alice.Connect()
+	bob.Connect()
 	media := &LocalMediaSource{}
 
-	fmt.Println("== 交叉消息：Alice 断线期间收到 Bob 提案，随后双方同时改配置 ==")
-	aliceEndpoint.Disconnect()
-	bobOffer, err := bobEndpoint.Offer(alice.ID, fullProposal(600_000))
+	fmt.Println("\n== 部分成员接受：Carol 离线，Alice 提案只有 Bob 答复 ==")
+	carol.Disconnect()
+	aliceOffer, err := alice.OfferAll(fullProposal(600_000))
 	if err != nil {
 		panic(err)
 	}
-	aliceOffer, err := aliceEndpoint.Offer(bob.ID, fullProposal(400_000))
+	version, _ := service.Version(DefaultSessionID, aliceOffer.Revision)
+	fmt.Printf("r%d 状态=%s（Bob 已接受，Carol 未答复，暂不入会话）\n", version.Revision, version.Status)
+
+	fmt.Println("\n== 成员离开与迟到同意同时发生：Carol(世代1) 离开，旧答复不再计数 ==")
+	if _, err := service.LeaveSession(DefaultSessionID, "carol"); err != nil {
+		panic(err)
+	}
+	version, _ = service.Version(DefaultSessionID, aliceOffer.Revision)
+	fmt.Printf("Carol 离开后 r%d 状态=%s，目标只剩在场成员\n", version.Revision, version.Status)
+	if _, _, err := service.AnswerOffer(DefaultSessionID, "carol", aliceOffer.Revision, fullProposal(600_000)); !errors.Is(err, ErrParticipant) {
+		panic(fmt.Sprintf("expected ErrParticipant for departed identity, got %v", err))
+	}
+	fmt.Println("旧身份 carol 的迟到同意被拒绝（ErrParticipant），不影响新状态")
+	carol.Connect() // 投递排队消息，旧身份端点自行忽略
+
+	fmt.Println("\n== 同名重入：Carol 重新加入成为新参与世代 ==")
+	_, carol2, err := service.JoinSession(DefaultSessionID, "carol", "Carol")
 	if err != nil {
 		panic(err)
 	}
-	fmt.Printf("Bob r%d 与 Alice r%d 交叉；规则固定为字典序较小者优先\n", bobOffer.Revision, aliceOffer.Revision)
-	aliceEndpoint.Connect()
-	bobEndpoint.Connect()
-	printMedia(service, media)
+	fmt.Printf("新参与身份=%s，旧身份 carol 的消息与答复均不影响它\n", carol2.ParticipationID)
+	carol2Endpoint := NewEndpoint(DefaultSessionID, carol2.ParticipationID, service, bus)
+	carol2Endpoint.Connect()
 
-	fmt.Println("\n== 迟到答复重放：旧版本不能覆盖新版本 ==")
-	_, staleVersion, err := service.AnswerOffer(DefaultSessionID, alice.ID, bobOffer.Revision, fullProposal(600_000))
-	if !errors.Is(err, ErrStale) {
-		panic(fmt.Sprintf("expected stale response, got %v", err))
+	fmt.Println("\n== 原轨道编号重新使用：新 Carol 用相同轨道 ID 发布 ==")
+	if _, err := carol2Endpoint.OfferAll(fullProposal(500_000)); err != nil {
+		panic(err)
 	}
-	fmt.Printf("r%d 状态=%s，当前会话未被覆盖\n", staleVersion.Revision, staleVersion.Status)
+	printViews(service, media, "alice", "bob", carol2.ParticipationID)
 
-	fmt.Println("\n== 断开与恢复：Bob 断线时保留信箱，Alice 停用视频 ==")
-	bobEndpoint.Disconnect()
-	_, err = aliceEndpoint.Offer(bob.ID, audioOnlyProposal())
+	fmt.Println("\n== 保存重开后的重复答复：重载服务，重复答复幂等 ==")
+	reopened, err := NewService(store)
 	if err != nil {
 		panic(err)
 	}
-	fmt.Printf("Bob 离线，Alice 消息在本地信箱排队：%d 条\n", bus.Queued(bob.ID))
-	bobEndpoint.Connect()
-	printMedia(service, media)
-
-	fmt.Println("\n== 协商失败：答复参数超出共同范围，旧会话保留 ==")
-	failedVersion, err := service.CreateOffer(DefaultSessionID, alice.ID, audioOnlyProposal())
+	for _, id := range []string{"alice", "bob", "carol"} {
+		reopened.RegisterPeer(Peer{ID: id, Capabilities: demoCapabilities()})
+	}
+	if _, stale, err := reopened.AnswerOffer(DefaultSessionID, "bob", aliceOffer.Revision, fullProposal(600_000)); errors.Is(err, ErrStale) {
+		fmt.Printf("重开后 Bob 对已完结 r%d 的迟到答复返回 stale，旧决定保留可查（答复数=%d）\n", stale.Revision, len(stale.Responses))
+	} else {
+		panic(fmt.Sprintf("expected stale after reopen, got %v", err))
+	}
+	partial, err := reopened.CreateOffer(DefaultSessionID, "alice", audioOnlyProposal())
 	if err != nil {
 		panic(err)
 	}
-	_, failed, err := service.AnswerOffer(DefaultSessionID, bob.ID, failedVersion.Revision, invalidCodecProposal())
-	if err == nil {
-		panic("expected negotiation failure")
+	if _, v, err := reopened.AnswerOffer(DefaultSessionID, "bob", partial.Revision, audioOnlyProposal()); err != nil || v.Status != VersionPartial {
+		panic(fmt.Sprintf("expected partial after first answer, got %v %s", err, v.Status))
 	}
-	fmt.Printf("r%d 状态=%s：%s\n", failed.Revision, failed.Status, err)
-	printMedia(service, media)
+	if _, dup, err := reopened.AnswerOffer(DefaultSessionID, "bob", partial.Revision, audioOnlyProposal()); err != nil {
+		panic(err)
+	} else if len(dup.Responses) != 1 || dup.Status != VersionPartial {
+		panic(fmt.Sprintf("duplicate answer not idempotent: %+v", dup))
+	} else {
+		fmt.Printf("重开后 Bob 对进行中 r%d 的重复答复幂等：答复数=%d，状态=%s\n", dup.Revision, len(dup.Responses), dup.Status)
+	}
+	if _, v, err := reopened.AnswerOffer(DefaultSessionID, "carol#2", partial.Revision, audioOnlyProposal()); err != nil || v.Status != VersionAccepted {
+		panic(fmt.Sprintf("expected accepted after carol#2, got %v %v", v, err))
+	} else {
+		fmt.Printf("carol#2 答复后 r%d 状态=%s（仅本世代同意被计入）\n", v.Revision, v.Status)
+	}
 
-	session, _ := service.Session(DefaultSessionID)
+	session, _ := reopened.Session(DefaultSessionID)
 	fmt.Printf("\n最终一致：session.revision=r%d，活动轨道=%s\n", session.Revision, describeTracks(session.Tracks))
+	for _, p := range session.Participants {
+		fmt.Printf("参与记录：%s（%s）present=%v online=%v\n", p.ParticipationID, p.DisplayName, p.Present, p.Online)
+	}
+}
+
+func printViews(service *Service, media *LocalMediaSource, participationIDs ...string) {
+	for _, pid := range participationIDs {
+		view, err := service.SessionFor(DefaultSessionID, pid)
+		if err != nil {
+			panic(err)
+		}
+		frames := media.Produce(view.Tracks)
+		fmt.Printf("%s 视角：轨道=[%s]，本地产出 %d 帧\n", pid, describeTracks(view.Tracks), len(frames))
+	}
 }
 
 func printMedia(service *Service, media *LocalMediaSource) {
